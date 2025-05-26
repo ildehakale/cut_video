@@ -1,60 +1,57 @@
-import argparse
-import cv2
+#!/usr/bin/env python3
+import argparse, subprocess, sys, os, shutil
 
-def clip_video(input_path: str, output_path: str, start_sec: float, end_sec: float):
-    cap = cv2.VideoCapture(input_path)
-    if not cap.isOpened():
-        raise IOError(f"Cannot open video file {input_path}")
+def find_ffmpeg():
+    path = shutil.which("ffmpeg")
+    if path is None:
+        print("Error: ffmpeg not found. Install it and ensure it’s on your PATH.", file=sys.stderr)
+        sys.exit(1)
+    return path
 
-    fps    = cap.get(cv2.CAP_PROP_FPS)
-    width  = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-    height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    fourcc = cv2.VideoWriter_fourcc(*"mp4v")  # use "XVID" for .avi
+def split_video(input_path: str, start: float, end: float, output_path: str):
+    ffmpeg = find_ffmpeg()
 
-    out = cv2.VideoWriter(output_path, fourcc, fps, (width, height))
+    # if output_path is a directory, auto-generate a filename
+    if os.path.isdir(output_path):
+        base = os.path.splitext(os.path.basename(input_path))[0]
+        s = f"{start:.2f}".replace('.', 'p')
+        e = f"{end:.2f}".replace('.', 'p')
+        output_path = os.path.join(output_path, f"{base}_{s}-{e}.mp4")
 
-    start_frame = int(start_sec * fps)
-    end_frame   = int(end_sec   * fps)
+    if not os.path.isfile(input_path):
+        print(f"Error: input file '{input_path}' not found.", file=sys.stderr)
+        sys.exit(1)
+    if end <= start:
+        print("Error: end time must be greater than start time.", file=sys.stderr)
+        sys.exit(1)
 
-    cap.set(cv2.CAP_PROP_POS_FRAMES, start_frame)
-    frame_idx = start_frame
+    cmd = [
+        ffmpeg, "-y",
+        "-i", input_path,
+        "-ss", str(start),
+        "-to", str(end),
+        "-c", "copy",
+        output_path
+    ]
 
-    while frame_idx < end_frame:
-        ret, frame = cap.read()
-        if not ret:
-            break
-        out.write(frame)
-        frame_idx += 1
+    try:
+        subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        print(f"✅ Created clip: {output_path}")
+    except subprocess.CalledProcessError as e:
+        print("FFmpeg error:", e.stderr.decode(), file=sys.stderr)
+        sys.exit(e.returncode)
 
-    cap.release()
-    out.release()
-    print(f"Clipped frames {start_frame}–{frame_idx} to '{output_path}'")
+
+def main():
+    p = argparse.ArgumentParser(description="Split a video segment via FFmpeg.")
+    p.add_argument("-i", "--input",  required=True, help="Path to source video file")
+    p.add_argument("-s", "--start",  required=True, type=float, help="Start time in seconds")
+    p.add_argument("-e", "--end",    required=True, type=float, help="End time in seconds")
+    p.add_argument("-o", "--output", required=True,
+                   help="Output file (with extension) or directory for auto-named clip")
+    args = p.parse_args()
+
+    split_video(args.input, args.start, args.end, args.output)
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(
-        description="Trim a video by specifying start and end times (in seconds)."
-    )
-    parser.add_argument("input",  help="Path to input video")
-    parser.add_argument("output", help="Path to save trimmed video")
-    parser.add_argument(
-        "--start", type=float, default=0.0,
-        help="Start time in seconds (default: 0.0)"
-    )
-    parser.add_argument(
-        "--end",   type=float, default=None,
-        help="End time in seconds (default: till end of video)"
-    )
-    args = parser.parse_args()
-
-    # If end not specified, read video length
-    if args.end is None:
-        cap = cv2.VideoCapture(args.input)
-        fps    = cap.get(cv2.CAP_PROP_FPS)
-        frame_count = cap.get(cv2.CAP_PROP_FRAME_COUNT)
-        args.end = frame_count / fps
-        cap.release()
-
-    if args.start < 0 or args.end <= args.start:
-        parser.error("Invalid start/end times. Make sure 0 <= start < end.")
-
-    clip_video(args.input, args.output, args.start, args.end)
+    main()
